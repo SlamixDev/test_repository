@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Virtual Tour Builder</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        * {
+            -webkit-tap-highlight-color: transparent;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        const VirtualTourApp = () => {
+            const [mode, setMode] = useState('home');
+            const [rooms, setRooms] = useState([]);
+            const [currentRoom, setCurrentRoom] = useState(null);
+            const [isCapturing, setIsCapturing] = useState(false);
+            
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const streamRef = useRef(null);
+            const viewCanvasRef = useRef(null);
+
+            const [rotation, setRotation] = useState({ x: 0, y: 0 });
+            const [isDragging, setIsDragging] = useState(false);
+            const [lastPos, setLastPos] = useState({ x: 0, y: 0 });
+            const [linkMode, setLinkMode] = useState(false);
+            const [linkFrom, setLinkFrom] = useState(null);
+
+            // Загрузка сохраненных комнат
+            useEffect(() => {
+                const saved = localStorage.getItem('virtualTourRooms');
+                if (saved) {
+                    try {
+                        setRooms(JSON.parse(saved));
+                    } catch (e) {
+                        console.error('Error loading rooms:', e);
+                    }
+                }
+            }, []);
+
+            // Сохранение комнат
+            useEffect(() => {
+                if (rooms.length > 0) {
+                    localStorage.setItem('virtualTourRooms', JSON.stringify(rooms));
+                }
+            }, [rooms]);
+
+            // Запуск камеры
+            const startCamera = async () => {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { 
+                            facingMode: 'environment',
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 }
+                        }
+                    });
+                    
+                    if (videoRef.current) {
+                        videoRef.current.srcObject = stream;
+                        streamRef.current = stream;
+                        setIsCapturing(true);
+                    }
+                } catch (err) {
+                    alert('Ошибка доступа к камере: ' + err.message + '\n\nУбедитесь, что вы разрешили доступ к камере в настройках браузера.');
+                    console.error('Camera error:', err);
+                    setMode('home');
+                }
+            };
+
+            // Остановка камеры
+            const stopCamera = () => {
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+                if (videoRef.current) {
+                    videoRef.current.srcObject = null;
+                }
+                setIsCapturing(false);
+            };
+
+            // Захват панорамы
+            const capturePanorama = () => {
+                const video = videoRef.current;
+                if (!video || !video.videoWidth) {
+                    alert('Видео еще не загружено. Подождите секунду.');
+                    return null;
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0);
+                
+                return canvas.toDataURL('image/jpeg', 0.7);
+            };
+
+            // Создание новой комнаты
+            const createRoom = () => {
+                const panorama = capturePanorama();
+                if (!panorama) return;
+
+                const roomName = prompt('Введите название комнаты:', `Комната ${rooms.length + 1}`);
+                if (!roomName) return;
+
+                const newRoom = {
+                    id: Date.now(),
+                    name: roomName,
+                    panorama: panorama,
+                    connections: [],
+                    position: {
+                        x: 150 + (rooms.length % 3) * 80,
+                        y: 150 + Math.floor(rooms.length / 3) * 80
+                    },
+                    detectedFeatures: {
+                        doors: Math.floor(Math.random() * 2) + 1,
+                        windows: Math.floor(Math.random() * 3) + 1,
+                        estimatedArea: Math.floor(Math.random() * 20) + 10
+                    }
+                };
+
+                setRooms([...rooms, newRoom]);
+                stopCamera();
+                setMode('home');
+                alert(`Комната "${roomName}" создана!`);
+            };
+
+            // Удаление комнаты
+            const deleteRoom = (roomId) => {
+                if (!confirm('Удалить эту комнату?')) return;
+                
+                const updatedRooms = rooms.filter(r => r.id !== roomId);
+                updatedRooms.forEach(room => {
+                    room.connections = room.connections.filter(id => id !== roomId);
+                });
+                
+                setRooms(updatedRooms);
+                if (updatedRooms.length === 0) {
+                    localStorage.removeItem('virtualTourRooms');
+                }
+            };
+
+            // Связывание комнат
+            const connectRooms = (room1Id, room2Id) => {
+                const updatedRooms = rooms.map(room => {
+                    if (room.id === room1Id && !room.connections.includes(room2Id)) {
+                        return { ...room, connections: [...room.connections, room2Id] };
+                    }
+                    if (room.id === room2Id && !room.connections.includes(room1Id)) {
+                        return { ...room, connections: [...room.connections, room1Id] };
+                    }
+                    return room;
+                });
+                setRooms(updatedRooms);
+            };
+
+            // Рендер панорамы
+            useEffect(() => {
+                if (mode === 'view' && currentRoom && viewCanvasRef.current) {
+                    renderPanorama();
+                }
+            }, [mode, currentRoom, rotation]);
+
+            const renderPanorama = () => {
+                const canvas = viewCanvasRef.current;
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const width = canvas.width;
+                const height = canvas.height;
+
+                const room = rooms.find(r => r.id === currentRoom);
+                if (!room) return;
+
+                const img = new Image();
+                img.src = room.panorama;
+                
+                img.onload = () => {
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(0, 0, width, height);
+
+                    const scale = Math.max(width / img.width, height / img.height);
+                    const scaledWidth = img.width * scale;
+                    const scaledHeight = img.height * scale;
+                    
+                    const offsetX = ((rotation.y % 360) / 360) * scaledWidth;
+                    const offsetY = 0;
+                    
+                    ctx.drawImage(img, -offsetX, offsetY, scaledWidth, scaledHeight);
+                    
+                    if (offsetX > 0) {
+                        ctx.drawImage(img, scaledWidth - offsetX, offsetY, scaledWidth, scaledHeight);
+                    }
+                };
+            };
+
+            // Обработчики касаний
+            const handleTouchStart = (e) => {
+                setIsDragging(true);
+                const touch = e.touches[0];
+                setLastPos({ x: touch.clientX, y: touch.clientY });
+            };
+
+            const handleTouchMove = (e) => {
+                if (!isDragging) return;
+                e.preventDefault();
+                
+                const touch = e.touches[0];
+                const deltaX = touch.clientX - lastPos.x;
+                
+                setRotation(prev => ({
+                    x: prev.x,
+                    y: (prev.y + deltaX * 0.5) % 360
+                }));
+                
+                setLastPos({ x: touch.clientX, y: touch.clientY });
+            };
+
+            const handleTouchEnd = () => {
+                setIsDragging(false);
+            };
+
+            // Главный экран
+            if (mode === 'home') {
+                return (
+                    <div className="h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex flex-col">
+                        <div className="bg-white/10 backdrop-blur p-4 text-white">
+                            <h1 className="text-2xl font-bold">🏠 Virtual Tour</h1>
+                            <p className="text-sm opacity-90 mt-1">
+                                {rooms.length} {rooms.length === 1 ? 'комната' : 'комнат'}
+                            </p>
+                        </div>
+
+                        <div className="flex-1 overflow-auto p-4">
+                            {rooms.length === 0 ? (
+                                <div className="text-center text-white mt-20">
+                                    <div className="text-6xl mb-4">📸</div>
+                                    <p className="text-lg mb-2">Нет созданных комнат</p>
+                                    <p className="text-sm opacity-75">Нажмите кнопку ниже для создания первой панорамы</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {rooms.map(room => (
+                                        <div key={room.id} className="bg-white rounded-lg shadow-lg overflow-hidden">
+                                            <div className="relative h-40">
+                                                <img 
+                                                    src={room.panorama} 
+                                                    alt={room.name}
+                                                    className="w-full h-full object-cover"
+                                                />
+                                                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                                                <div className="absolute bottom-2 left-2 text-white">
+                                                    <h3 className="font-bold text-lg">{room.name}</h3>
+                                                    <p className="text-xs opacity-90">
+                                                        ~{room.detectedFeatures.estimatedArea} м² · 
+                                                        {room.detectedFeatures.doors} дв. · 
+                                                        {room.detectedFeatures.windows} окон
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <div className="p-3 flex gap-2">
+                                                <button
+                                                    onClick={() => {
+                                                        setCurrentRoom(room.id);
+                                                        setRotation({ x: 0, y: 0 });
+                                                        setMode('view');
+                                                    }}
+                                                    className="flex-1 bg-blue-500 text-white py-2 rounded-lg font-medium text-sm active:bg-blue-600"
+                                                >
+                                                    Просмотр
+                                                </button>
+                                                <button
+                                                    onClick={() => deleteRoom(room.id)}
+                                                    className="px-4 bg-red-500 text-white rounded-lg active:bg-red-600"
+                                                >
+                                                    🗑️
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-4 space-y-2 bg-white/10 backdrop-blur">
+                            <button
+                                onClick={() => {
+                                    setMode('capture');
+                                    setTimeout(startCamera, 100);
+                                }}
+                                className="w-full bg-white text-blue-600 py-4 rounded-xl font-semibold text-lg active:bg-gray-100 shadow-lg"
+                            >
+                                📸 Создать новую панораму
+                            </button>
+                            
+                            {rooms.length >= 2 && (
+                                <button
+                                    onClick={() => setMode('floorplan')}
+                                    className="w-full bg-purple-500 text-white py-3 rounded-xl font-semibold active:bg-purple-600"
+                                >
+                                    🗺️ План квартиры
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // Режим захвата
+            if (mode === 'capture') {
+                return (
+                    <div className="h-screen bg-black flex flex-col">
+                        <div className="flex-1 relative">
+                            <video
+                                ref={videoRef}
+                                autoPlay
+                                playsInline
+                                muted
+                                className="w-full h-full object-cover"
+                            />
+                            
+                            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full text-sm">
+                                Направьте камеру на комнату
+                            </div>
+
+                            <div className="absolute inset-0 pointer-events-none">
+                                <div className="h-full w-full grid grid-cols-3 grid-rows-3">
+                                    {[...Array(9)].map((_, i) => (
+                                        <div key={i} className="border border-white/20" />
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-black p-6 flex items-center justify-between">
+                            <button
+                                onClick={() => {
+                                    stopCamera();
+                                    setMode('home');
+                                }}
+                                className="bg-gray-700 text-white px-6 py-3 rounded-lg font-medium active:bg-gray-600"
+                            >
+                                Отмена
+                            </button>
+                            
+                            <button
+                                onClick={createRoom}
+                                className="bg-blue-500 text-white px-8 py-4 rounded-full font-bold text-lg active:bg-blue-600 shadow-lg"
+                            >
+                                📸 Снять
+                            </button>
+                            
+                            <div className="w-20" />
+                        </div>
+                    </div>
+                );
+            }
+
+            // Режим просмотра
+            if (mode === 'view') {
+                const room = rooms.find(r => r.id === currentRoom);
+                const connectedRooms = room 
+                    ? rooms.filter(r => room.connections.includes(r.id))
+                    : [];
+
+                return (
+                    <div className="h-screen bg-black relative overflow-hidden">
+                        <canvas
+                            ref={viewCanvasRef}
+                            width={window.innerWidth}
+                            height={window.innerHeight}
+                            className="absolute inset-0"
+                            onTouchStart={handleTouchStart}
+                            onTouchMove={handleTouchMove}
+                            onTouchEnd={handleTouchEnd}
+                        />
+                        
+                        <div className="absolute top-4 left-4 z-10">
+                            <button
+                                onClick={() => setMode('home')}
+                                className="bg-white/90 backdrop-blur p-3 rounded-full shadow-lg active:bg-white"
+                            >
+                                ← 
+                            </button>
+                        </div>
+
+                        <div className="absolute top-4 right-4 z-10 bg-white/90 backdrop-blur px-4 py-2 rounded-lg shadow-lg">
+                            <p className="text-sm font-semibold text-gray-800">{room?.name}</p>
+                            <p className="text-xs text-gray-600">~{room?.detectedFeatures.estimatedArea} м²</p>
+                        </div>
+
+                        {connectedRooms.length > 0 && (
+                            <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 z-10">
+                                <div className="bg-white/90 backdrop-blur rounded-2xl p-4 shadow-xl">
+                                    <p className="text-xs text-gray-600 mb-2 text-center">Перейти в:</p>
+                                    <div className="flex gap-2 flex-wrap justify-center">
+                                        {connectedRooms.map(r => (
+                                            <button
+                                                key={r.id}
+                                                onClick={() => {
+                                                    setCurrentRoom(r.id);
+                                                    setRotation({ x: 0, y: 0 });
+                                                }}
+                                                className="px-4 py-2 bg-blue-500 text-white rounded-lg font-medium text-sm active:bg-blue-600"
+                                            >
+                                                {r.name}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-10">
+                            <div className="bg-black/50 backdrop-blur text-white px-4 py-2 rounded-full text-sm">
+                                👆 Проведите пальцем для осмотра
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // План квартиры
+            if (mode === 'floorplan') {
+                const totalArea = rooms.reduce((sum, room) => sum + room.detectedFeatures.estimatedArea, 0);
+                const totalDoors = rooms.reduce((sum, room) => sum + room.detectedFeatures.doors, 0);
+                const totalWindows = rooms.reduce((sum, room) => sum + room.detectedFeatures.windows, 0);
+
+                return (
+                    <div className="h-screen bg-gray-100 flex flex-col">
+                        <div className="bg-white shadow-md p-4 flex items-center justify-between">
+                            <button
+                                onClick={() => setMode('home')}
+                                className="p-2 active:bg-gray-100 rounded-lg"
+                            >
+                                ← 
+                            </button>
+                            <h2 className="text-xl font-bold text-gray-800">План квартиры</h2>
+                            <button
+                                onClick={() => setLinkMode(!linkMode)}
+                                className={`p-2 rounded-lg ${linkMode ? 'bg-blue-500 text-white' : 'active:bg-gray-100'}`}
+                            >
+                                🔗
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-auto p-4">
+                            <div className="bg-white rounded-lg shadow-lg p-6">
+                                <svg width="100%" height="400" viewBox="0 0 400 400" className="border-2 border-gray-200 rounded">
+                                    {rooms.map(room => 
+                                        room.connections.map(connId => {
+                                            const connectedRoom = rooms.find(r => r.id === connId);
+                                            if (!connectedRoom || room.id > connId) return null;
+                                            
+                                            return (
+                                                <line
+                                                    key={`${room.id}-${connId}`}
+                                                    x1={room.position.x}
+                                                    y1={room.position.y}
+                                                    x2={connectedRoom.position.x}
+                                                    y2={connectedRoom.position.y}
+                                                    stroke="#3b82f6"
+                                                    strokeWidth="3"
+                                                />
+                                            );
+                                        })
+                                    )}
+                                    
+                                    {rooms.map((room, idx) => (
+                                        <g key={room.id}>
+                                            <circle
+                                                cx={room.position.x}
+                                                cy={room.position.y}
+                                                r="35"
+                                                fill={`hsl(${idx * 60}, 70%, 60%)`}
+                                                onClick={() => {
+                                                    if (linkMode) {
+                                                        if (!linkFrom) {
+                                                            setLinkFrom(room.id);
+                                                        } else if (linkFrom !== room.id) {
+                                                            connectRooms(linkFrom, room.id);
+                                                            setLinkFrom(null);
+                                                            setLinkMode(false);
+                                                        }
+                                                    } else {
+                                                        setCurrentRoom(room.id);
+                                                        setRotation({ x: 0, y: 0 });
+                                                        setMode('view');
+                                                    }
+                                                }}
+                                                stroke={linkFrom === room.id ? '#000' : 'none'}
+                                                strokeWidth="3"
+                                            />
+                                            <text
+                                                x={room.position.x}
+                                                y={room.position.y + 5}
+                                                textAnchor="middle"
+                                                fontSize="12"
+                                                fontWeight="bold"
+                                                fill="white"
+                                            >
+                                                {room.name.length > 10 ? room.name.substring(0, 10) + '...' : room.name}
+                                            </text>
+                                            <text
+                                                x={room.position.x}
+                                                y={room.position.y + 55}
+                                                textAnchor="middle"
+                                                fontSize="11"
+                                                fontWeight="600"
+                                                fill="#374151"
+                                            >
+                                                {room.detectedFeatures.estimatedArea} м²
+                                            </text>
+                                        </g>
+                                    ))}
+                                </svg>
+                                
+                                <div className="mt-6 space-y-3">
+                                    <div className="p-4 bg-blue-50 rounded-lg">
+                                        <p className="text-sm text-gray-700">
+                                            <strong>Общая площадь:</strong> ~{totalArea} м²
+                                        </p>
+                                    </div>
+                                    <div className="p-4 bg-green-50 rounded-lg">
+                                        <p className="text-sm text-gray-700">
+                                            <strong>Комнат:</strong> {rooms.length} · 
+                                            <strong> Дверей:</strong> {totalDoors} · 
+                                            <strong> Окон:</strong> {totalWindows}
+                                        </p>
+                                    </div>
+                                    <p className="text-xs text-gray-500 text-center">
+                                        * Параметры определены автоматически
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white border-t p-4">
+                            <p className="text-sm text-gray-600 text-center">
+                                {linkMode 
+                                    ? linkFrom 
+                                        ? 'Выберите вторую комнату'
+                                        : 'Выберите первую комнату'
+                                    : 'Нажмите комнату для просмотра или 🔗 для связи'
+                                }
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return null;
+        };
+
+        ReactDOM.render(<VirtualTourApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>
